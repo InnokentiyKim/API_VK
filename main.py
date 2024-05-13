@@ -1,18 +1,18 @@
 import requests
 from tqdm import tqdm
-from datetime import date
+from http import HTTPStatus
 import configparser
 import json
 
 
 class VK:
 
-    base_url = 'https://api.vk.com/method/'
     def __init__(self, access_token: str, user_id: str, version='5.131'):
-        self.token= access_token
+        self.token = access_token
         self.id = user_id
         self.version = version
         self.params = {'access_token': self.token, 'v': self.version}
+        self.base_url = 'https://api.vk.com/method/'
         self.photos_info = {}
     
 
@@ -23,120 +23,145 @@ class VK:
         return response.json()
 
 
-    def get_users_photos(self, owner_id: str, album_id='profile', rev=0, photo_sizes=1, count=5):
-        url = self.base_url + 'photos.get'
-        params = {'owner_id': owner_id, 'album_id': album_id, 'rev': rev, 
-                  'extended': 1, 'photo_sizes': photo_sizes, 'count': count}
-        try:
-            response = requests.get(url, params={**self.params, **params})
-            if 200 <= response.status_code < 300:
-                return response
-            else:
-                return None
-        except:
-            print("Connection or another error occured!")
-
-
     def _generate_photo_name(self, likes_count: int, date_: str, ext='.jpg') -> str:
         name = str(likes_count) + ext
         if name in self.photos_info['names']:
-            name = str(likes_count) + '_' + date_ + ext 
+            name = str(likes_count) + '_' + str(date_) + ext 
         return name  
+    
+
+    def _get_photos_amount(self):
+        amount = 0
+        while True:
+            try:
+                amount = int(input("Enter photos amount: "))
+                if amount > 0:
+                    return amount
+                else:
+                    print("Количество должно быть больше 0")
+            except:
+                print("Введено не число")
 
 
-    def get_photos_info(self, photos_get_resp: json) -> dict:
-        self.photos_info['count'] = photos_get_resp['response']['count']
-        self.photos_info['names'] = []
-        if self.photos_info['count']:
-            self.photos_info['album_id'] = photos_get_resp['response']['items'][0]['album_id']
-            self.photos_info['items'] = []
-            for item in photos_get_resp['response']['items']:
-                item_info = {}
-                item_info['date'] = date.fromtimestamp(item['date']).__str__()
-                item_info['id'] = item['id']
-                item_info['comments_count'] = item['comments']['count']
-                item_info['reposts_count'] = item['reposts']['count']
-                item_info['likes_count'] = item['likes']['count']
-                item_info['user_likes'] = item['likes']['user_likes']
-                item_info['size'] = {'height': item['sizes'][0]['height'], 'width': item['sizes'][0]['width']}
-                item_info['url'] = item['sizes'][0]['url']
-                for photo_size in item['sizes']:
-                    if photo_size['height'] >= item_info['size']['height'] and photo_size['width'] >= item_info['size']['width']:
-                        item_info['size']['height'] = photo_size['height']
-                        item_info['size']['width'] = photo_size['width']
-                        item_info['url'] = photo_size['url']
-                self.photos_info['items'].append(item_info)
-                self.photos_info['names'].append(self._generate_photo_name(item_info['likes_count'], item_info['date']))
-        return self.photos_info
+    def get_users_photos(self, owner_id: str, album_id='profile') -> bool:
+        url = self.base_url + 'photos.get'
+        photos_amount = self._get_photos_amount()
+        params = {'owner_id': owner_id, 'album_id': album_id, 'rev': 0, 
+                  'extended': 1, 'photo_sizes': 1, 'count': photos_amount}
+        try:
+            response = requests.get(url, params={**self.params, **params})
+        except:
+            print('Connection or another error occured!')
+            return False
+        if response.status_code == HTTPStatus.OK:
+            try:
+                all_info = response.json()
+                self.photos_info['count'] = 0
+                self.photos_info['names'] = []
+                self.photos_info['items'] = []
+                for item in all_info['response']['items']:
+                    item_info = {}
+                    item_info['date'] = item['date']
+                    item_info['likes_count'] = item['likes']['count']
+                    sizes_urls = {item['sizes'][i]['type']: item['sizes'][i]['url'] for i in range(len(item['sizes']))}
+                    max_size = max(sizes_urls.keys()) if 'w' not in sizes_urls else 'w'
+                    item_info['size'] = max_size
+                    item_info['url'] = sizes_urls[max_size]
+                    self.photos_info['items'].append(item_info)
+                    self.photos_info['count'] += 1
+                    self.photos_info['names'].append(self._generate_photo_name(item_info['likes_count'], item_info['date']))
+                return True
+            except:
+                print('Failed while getting users photos!')
+                print(all_info['error']['error_msg']) 
+                return False 
+        else:
+            return False                              
 
 
-def create_folder_at_yadisk(access_token: str, folder_name: str, ver='v1') -> bool:
-    base_url = 'https://cloud-api.yandex.net'
-    url = base_url + f'/{ver}/disk/resources'
-    headers = {'Authorization': access_token}
-    params = {'path': folder_name}
-    try:
-        response = requests.put(url, params=params, headers=headers)
-        if 200 <= response.status_code < 300:
+class YaDisk:
+    
+    def __init__(self, access_token: str, version='v1'):
+        self.token = access_token
+        self.version = version
+        self.base_url = 'https://cloud-api.yandex.net'
+        self.active_folder = 'New_Folder'
+
+
+    def _get_folder_name(self):
+        folder_name = input('Enter folder name: ')
+        return folder_name.replace('/', '')
+
+
+    def create_folder(self) -> bool:
+        url = self.base_url + f'/{self.version}/disk/resources'
+        folder_name = self._get_folder_name()
+        headers = {'Authorization': self.token}
+        params = {'path': folder_name}
+        try:
+            response = requests.put(url, params=params, headers=headers)
+        except:
+            print('Error occured!')
+            return False
+        if response.status_code == HTTPStatus.CREATED:
             print('Folder successfully created!')
+            self.active_folder = folder_name
+            return True
+        elif response.status_code == HTTPStatus.CONFLICT:
+            self.active_folder = folder_name
+            print("Folder already exist")
             return True
         else:
             print('Folder creation failed!')
             print(response.json()['description'])
             return False
-    except:
-        print('Folder creation failed!')
-        return False
 
 
-def upload_photo_to_yadisk(access_token: str, photo_url: str, disk_path: str, ver='v1', disable_redirects='false') -> bool:
-    base_url = 'https://cloud-api.yandex.net'
-    disk_url = base_url + f'/{ver}/disk/resources/upload'
-    headers = {'Authorization': access_token}
-    params = {'url': photo_url,'path': disk_path, 'disable_redirects': disable_redirects}
-    try:
-        response = requests.post(disk_url, params=params, headers=headers)
-        if 200 <= response.status_code < 300:
+    def upload_photo(self, photo_url: str, disk_path: str) -> bool:
+        disk_url = self.base_url + f'/{self.version}/disk/resources/upload'
+        headers = {'Authorization': self.token}
+        params = {'url': photo_url,'path': disk_path, 'disable_redirects': 'false'}
+        try:
+            response = requests.post(disk_url, params=params, headers=headers)
+        except:
+            print('Uploading failed!')
+            return False
+        if response.status_code == HTTPStatus.ACCEPTED:
             return True
         else:
             return False
-    except:
-        print('Uploading failed!')
-        return False
+        
+
+    def upload_all_photos(self, vk_user, folder_name: str) -> int:
+        uploaded_files = 0
+        if isinstance(vk_user, VK):
+            photos_count = vk_user.photos_info['count']
+            photo_links = [item['url'] for item in vk_user.photos_info['items']]
+            print('Uploading files to yandex disk...')
+            for i in tqdm(range(photos_count), colour='Green'):
+                disk_path = folder_name + '/' + vk_user.photos_info['names'][i]
+                if self.upload_photo(photo_links[i], disk_path):
+                    uploaded_files += 1
+            print('Done!')
+            print('Number of uploaded files:', uploaded_files, '/', photos_count)
+        return uploaded_files
 
 
 def main():
     config = configparser.ConfigParser()
     config.read("settings.ini")
-    vk_access_token = config['VK']['vk_token']
-    user_id = config['VK']['user_id']
-    yadisk_access_token = config['YaDisk']['yadisk_token']
-    vk_user = VK(vk_access_token, user_id)
-    get_photos_response = vk_user.get_users_photos(user_id)
-    disk_folder_name = "VK_Photos"
-    create_folder_at_yadisk(yadisk_access_token, disk_folder_name)
-    if get_photos_response:
-        try:
-            get_photos_response = get_photos_response.json()
-            photos_info = vk_user.get_photos_info(get_photos_response)
-        except:
-            print('Failed while getting users photos!')
-            print('Error code: ', get_photos_response['error']['error_code'])
-            print('Error message: ', get_photos_response['error']['error_msg'])
-        else:
-            files_count = vk_user.photos_info['count']
-            uploaded_files_count = 0
-            photo_links = [link['url'] for link in photos_info['items']]
-            photo_names = vk_user.photos_info['names']
-            print('Uploading files to yandex disk...')
-            for i in tqdm(range(files_count), colour='Green'):
-                disk_path = disk_folder_name + '/' + photo_names[i]
-                if(upload_photo_to_yadisk(yadisk_access_token, photo_url=photo_links[i], disk_path=disk_path)):
-                    uploaded_files_count += 1
-            print('Done!')
-            print('Number of uploaded files:', uploaded_files_count, '/', files_count)
-            with open('photos_info.json', 'w') as file:
-                json.dump(vk_user.photos_info, file)
+    vk_user = VK(config['VK']['vk_token'], config['VK']['user_id'])
+    yadisk_user = YaDisk(config['YaDisk']['yadisk_token'])
+    if vk_user.get_users_photos(config['VK']['user_id']):
+        if yadisk_user.create_folder():
+            print(f"Do you want to upload to '{yadisk_user.active_folder}' directory?")
+            answer = input("[Y] - yes, [_] - cancel: ").upper()
+            if answer == "Y":
+                yadisk_user.upload_all_photos(vk_user, yadisk_user.active_folder)
+            else:
+                print("Uploading was cancelled")
+        with open('photos_info.json', 'w') as file:
+            json.dump(vk_user.photos_info, file)
 
 
 if __name__ == '__main__':
